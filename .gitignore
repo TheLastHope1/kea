@@ -1,0 +1,19 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+.pytest_cache/
+.ruff_cache/
+build/
+dist/
+
+# Kea runtime state: market-data cache, paper ledger, reports
+.kea/
+reports/
+
+# Never commit broker credentials
+tiger_openapi_config.properties
+tiger_openapi_token.properties
+*.pem
+.env
