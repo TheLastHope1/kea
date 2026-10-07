@@ -13,7 +13,6 @@ Besides the usual CAGR / Sharpe / drawdown, this module implements:
 from __future__ import annotations
 
 import math
-from collections.abc import Sequence
 from dataclasses import asdict, dataclass
 from statistics import NormalDist
 
@@ -143,32 +142,41 @@ def probabilistic_sharpe(returns: pd.Series, benchmark_sharpe: float = 0.0) -> f
     return _NORMAL.cdf((sr - benchmark_sharpe) * math.sqrt(n - 1) / math.sqrt(denominator))
 
 
-def expected_max_sharpe(trial_sharpes: Sequence[float], n_trials: int | None = None) -> float:
-    """Sharpe the best of N skill-less trials would show by luck alone (per period).
-
-    The spread comes from the Sharpe ratios observed across `trial_sharpes`; N is
-    `n_trials` when more variants were tried than were kept (it must be honest).
-    """
-    n = max(n_trials or 0, len(trial_sharpes))
-    if n < 2 or len(trial_sharpes) < 2:
+def expected_max_z(n_trials: int) -> float:
+    """Expected maximum of `n_trials` independent standard normal draws (0 for one)."""
+    if n_trials < 2:
         return 0.0
-    spread = float(np.std(trial_sharpes, ddof=1))
-    return spread * (
-        (1 - EULER_GAMMA) * _NORMAL.inv_cdf(1 - 1 / n)
-        + EULER_GAMMA * _NORMAL.inv_cdf(1 - 1 / (n * math.e))
+    return (1 - EULER_GAMMA) * _NORMAL.inv_cdf(1 - 1 / n_trials) + EULER_GAMMA * _NORMAL.inv_cdf(
+        1 - 1 / (n_trials * math.e)
     )
 
 
-def deflated_sharpe(
-    returns: pd.Series, trial_sharpes: Sequence[float], n_trials: int | None = None
-) -> float:
-    """Probabilistic Sharpe against the luck threshold implied by all trials run.
+def sharpe_standard_error(returns: pd.Series) -> float:
+    """Standard error of the per-period Sharpe estimate, allowing for skew and fat tails."""
+    returns = returns.dropna()
+    sr = per_period_sharpe(returns)
+    skew = float(returns.skew())
+    kurt = float(returns.kurt() + 3.0)
+    variance = (1 - skew * sr + (kurt - 1) / 4 * sr**2) / max(len(returns) - 1, 1)
+    return math.sqrt(max(variance, 0.0))
 
-    `trial_sharpes` are per-period Sharpe ratios of the variants compared
-    (including this one). Read the result as the probability the strategy has
-    real skill after accounting for the search that found it.
+
+def deflated_sharpe(returns: pd.Series, n_trials: int = 1, benchmark_sharpe: float = 0.0) -> float:
+    """Probability the true Sharpe beats `benchmark_sharpe`, after a multiple-testing haircut.
+
+    Try enough skill-less variants and the best will look good by luck: its Sharpe
+    beats the truth by about one standard error times the expected maximum of
+    `n_trials` normal draws (Bailey and López de Prado's deflated Sharpe ratio).
+    That luck is added to the hurdle. Treating the trials as independent makes the
+    haircut conservative, since variants of one idea are correlated.
+
+    With `benchmark_sharpe` set to buy-and-hold's per-period Sharpe, the result
+    reads as the probability that the strategy's risk-adjusted return genuinely
+    beats simply holding the market. Against zero, any long-only equity strategy
+    looks skilled over a long sample: it is just collecting the equity premium.
     """
-    return probabilistic_sharpe(returns, expected_max_sharpe(trial_sharpes, n_trials))
+    hurdle = benchmark_sharpe + sharpe_standard_error(returns) * expected_max_z(n_trials)
+    return probabilistic_sharpe(returns, hurdle)
 
 
 def trading_stats(fills: pd.DataFrame, equity: pd.Series) -> dict[str, float]:

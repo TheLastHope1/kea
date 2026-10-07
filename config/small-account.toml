@@ -1,0 +1,36 @@
+# For accounts under about USD 20,000: one market, a handful of trades a year.
+#
+# Kea's full ETF portfolio places dozens of orders a year. At Tiger NZ's USD 2
+# per order that is a real drag on a small account. This configuration holds US
+# large caps (VONE, a near-twin of the S&P 500) while they trade above their
+# 200-day average and short Treasuries (SHY) otherwise: the rule from Faber
+# (2007), "A Quantitative Approach to Tactical Asset Allocation".
+
+[universe]
+symbols = ["VONE"]
+cash_symbol = "SHY"
+benchmark = "VONE"
+
+[strategy]
+name = "trend_filter"
+
+[strategy.trend_filter]
+sma_days = 200
+
+[risk]
+max_weight = 1.0
+target_vol = 0.20   # only bites in turbulent markets
+
+[execution]
+fees = "tiger_nz"
+drift_band = 0.05
+min_trade_value = 250.0
+
+[broker]
+initial_cash = 10000.0
+state_dir = ".kea/small-account"
+
+[report]
+trials = 9
+title = "The small-account rule"
+summary = "One market and a handful of trades a year: US large caps while they trade above their 200-day average, short Treasuries otherwise, with Tiger's USD 2 orders."

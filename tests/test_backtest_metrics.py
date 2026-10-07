@@ -10,7 +10,7 @@ from kea.data.history import PriceHistory
 from kea.metrics import (
     annual_returns,
     deflated_sharpe,
-    expected_max_sharpe,
+    expected_max_z,
     longest_drawdown_days,
     performance,
     probabilistic_sharpe,
@@ -99,8 +99,8 @@ def test_compare_and_account_size_sensitivity(config, history):
     comparison = compare(config, history, strategies=("trend", "momentum"), trials=10)
     table = comparison.table()
     assert list(table.index) == ["trend", "momentum", "buy_and_hold"]  # no IEF: no 60/40
-    assert table.loc["buy_and_hold", "dsr"] is None or pd.isna(table.loc["buy_and_hold", "dsr"])
-    assert 0 <= table.loc["trend", "dsr"] <= 1
+    assert pd.isna(table.loc["buy_and_hold", "beats_benchmark"])
+    assert 0 <= table.loc["trend", "beats_benchmark"] <= 1
     assert comparison.trials == 10
     sizes = account_size_sensitivity(config, history, "trend", [2_000, 100_000])
     assert sizes.loc[2_000, "fee_drag"] > sizes.loc[100_000, "fee_drag"]
@@ -136,9 +136,12 @@ def test_probabilistic_and_deflated_sharpe_behave():
     noise = pd.Series(rng.normal(0.0, 0.01, 2500))
     assert probabilistic_sharpe(skilled) > 0.99
     assert 0.0 < probabilistic_sharpe(noise) < 1.0
-    trials = [0.02, 0.05, -0.01, 0.03]
-    assert expected_max_sharpe(trials, 1000) > expected_max_sharpe(trials, 4) > 0
-    assert deflated_sharpe(skilled, trials, 1000) < deflated_sharpe(skilled, trials, 4)
+    assert expected_max_z(1) == 0
+    assert expected_max_z(1000) > expected_max_z(10) > 1
+    assert deflated_sharpe(skilled, 1) == pytest.approx(probabilistic_sharpe(skilled))
+    assert deflated_sharpe(skilled, 1000) < deflated_sharpe(skilled, 10) < deflated_sharpe(skilled)
+    # Beating a benchmark is a higher bar than beating zero.
+    assert deflated_sharpe(skilled, 4, benchmark_sharpe=0.09) < deflated_sharpe(skilled, 4)
 
 
 def test_trading_stats_annualise_fees():

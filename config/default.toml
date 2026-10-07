@@ -1,15 +1,18 @@
 # Kea default configuration: paper trading a diversified ETF portfolio.
 #
-# Every value below is also the built-in default, written out so you can see
-# and change it. Parameters come from the published literature, NOT from tuning
+# Every value below is also the built-in default (except [report] trials, which
+# records this repository's research history), written out so you can change it. Parameters come from the published literature, NOT from tuning
 # on backtests. If you change them because a backtest looked better, count that
 # as a trial (`kea compare --trials N`) so the deflated Sharpe ratio stays honest.
 
 [universe]
-# US-listed ETFs covering stocks, bonds, real estate, gold and commodities.
-symbols = ["SPY", "QQQ", "IWM", "EFA", "EEM", "VNQ", "TLT", "IEF", "LQD", "GLD", "DBC"]
-cash_symbol = "BIL"     # 1-3 month T-bill ETF: where unallocated money waits
-benchmark = "SPY"
+# Eight US-listed ETFs: US large and small caps (VONE, VTWO), international stocks
+# (VXUS), long and intermediate Treasuries (TLT, IEF), corporate bonds (VCIT), gold
+# (GLD) and commodities (PDBC). All but GLD are Nasdaq-listed, so free dividend-
+# adjusted prices are available anywhere; GLD pays no dividends.
+symbols = ["VONE", "VTWO", "VXUS", "TLT", "IEF", "VCIT", "GLD", "PDBC"]
+cash_symbol = "SHY"     # 1-3 year Treasuries: where unallocated money waits
+benchmark = "VONE"      # Russell 1000, a near-twin of the S&P 500
 asset_class = "equity"
 
 [data]
@@ -21,7 +24,9 @@ allow_price_only = false
 
 [strategy]
 name = "ensemble"
-members = ["trend", "momentum", "ml"]
+# Add "ml" to try the machine-learning forecaster. It is off by default because it
+# has shown no out-of-sample skill on any dataset so far (see TRIALS.md).
+members = ["trend", "momentum"]
 rebalance = "monthly"   # decide on the first session of each month
 
 [strategy.trend]        # time-series momentum over 1, 3, 6 and 12 months
@@ -66,3 +71,6 @@ kind = "paper"          # local simulated account; "tiger" uses the Tiger OpenAP
 initial_cash = 10000.0
 state_dir = ".kea/state"
 allow_live = false
+
+[report]
+trials = 9              # running total from TRIALS.md; raise it whenever you try a variant

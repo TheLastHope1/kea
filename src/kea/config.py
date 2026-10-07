@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 AssetClass = Literal["equity", "crypto"]
-Provider = Literal["auto", "yahoo", "nasdaq", "binance", "tiger"]
+Provider = Literal["auto", "yahoo", "nasdaq", "binance", "tiger", "french"]
 Rebalance = Literal["weekly", "monthly"]
 FeeModelName = Literal["tiger_nz", "bps", "zero"]
 BrokerKind = Literal["paper", "tiger"]
@@ -40,11 +40,11 @@ def _require(condition: bool, message: str) -> None:
 class UniverseConfig:
     """What the agent may hold, what it parks cash in, and what it is judged against."""
 
-    symbols: tuple[str, ...] = (
-        "SPY", "QQQ", "IWM", "EFA", "EEM", "VNQ", "TLT", "IEF", "LQD", "GLD", "DBC",
-    )  # fmt: skip
-    cash_symbol: str | None = "BIL"
-    benchmark: str = "SPY"
+    # Nasdaq-listed where possible, so free total-return data is available from
+    # anywhere, including cloud runners that Yahoo blocks. GLD pays no dividends.
+    symbols: tuple[str, ...] = ("VONE", "VTWO", "VXUS", "TLT", "IEF", "VCIT", "GLD", "PDBC")
+    cash_symbol: str | None = "SHY"
+    benchmark: str = "VONE"
     asset_class: AssetClass = "equity"
 
     def __post_init__(self) -> None:
@@ -108,6 +108,17 @@ class MomentumConfig:
 
 
 @dataclass(frozen=True)
+class FilterConfig:
+    """One market, held only while it trades above its long-run average (Faber 2007)."""
+
+    asset: str | None = None  # defaults to the universe's benchmark
+    sma_days: int = 200
+
+    def __post_init__(self) -> None:
+        _require(self.sma_days > 1, "sma_days must be > 1")
+
+
+@dataclass(frozen=True)
 class MLConfig:
     """Walk-forward classifier predicting whether each asset beats cash over `horizon`."""
 
@@ -131,11 +142,13 @@ class MLConfig:
 @dataclass(frozen=True)
 class StrategyConfig:
     name: str = "ensemble"
-    members: tuple[str, ...] = ("trend", "momentum", "ml")
+    # The ML forecaster is opt-in: it has shown no out-of-sample skill so far (TRIALS.md).
+    members: tuple[str, ...] = ("trend", "momentum")
     rebalance: Rebalance = "monthly"
     trend: TrendConfig = field(default_factory=TrendConfig)
     momentum: MomentumConfig = field(default_factory=MomentumConfig)
     ml: MLConfig = field(default_factory=MLConfig)
+    trend_filter: FilterConfig = field(default_factory=FilterConfig)
 
 
 @dataclass(frozen=True)
@@ -202,6 +215,20 @@ class BacktestConfig:
 
 
 @dataclass(frozen=True)
+class ReportConfig:
+    """How a configuration introduces itself when shown as a study in the report."""
+
+    title: str | None = None
+    summary: str | None = None
+    # Strategy variants tried so far in this line of research (log them in TRIALS.md).
+    # It sets the multiple-testing haircut on "beats buy and hold".
+    trials: int | None = None
+
+    def __post_init__(self) -> None:
+        _require(self.trials is None or self.trials >= 1, "trials must be >= 1")
+
+
+@dataclass(frozen=True)
 class Config:
     universe: UniverseConfig = field(default_factory=UniverseConfig)
     data: DataConfig = field(default_factory=DataConfig)
@@ -210,6 +237,7 @@ class Config:
     execution: ExecutionConfig = field(default_factory=ExecutionConfig)
     broker: BrokerConfig = field(default_factory=BrokerConfig)
     backtest: BacktestConfig = field(default_factory=BacktestConfig)
+    report: ReportConfig = field(default_factory=ReportConfig)
 
     def replace(self, **sections: Any) -> Config:
         return dataclasses.replace(self, **sections)

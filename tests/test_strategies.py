@@ -111,3 +111,21 @@ def test_ml_forecaster_is_deterministic():
 def test_ml_forecaster_abstains_without_enough_training_data(history):
     strategy = MLForecaster(RISKY, "BIL", 252, MLConfig())
     assert strategy.target_weights(history.head(500)).sum() == 0
+
+
+def test_trend_filter_holds_the_market_only_above_its_average():
+    from kea.config import FilterConfig
+    from kea.strategies.trend import TrendFilter
+
+    rising = make_history(
+        {"SPY": 0.002, "BIL": 0.0001}, days=300, vol={"SPY": 0.002, "BIL": 0.0003}
+    )
+    falling = make_history(
+        {"SPY": -0.002, "BIL": 0.0001}, days=300, vol={"SPY": 0.002, "BIL": 0.0003}
+    )
+    strategy = TrendFilter(["SPY"], "BIL", 252, FilterConfig(sma_days=200), "SPY")
+    assert strategy.target_weights(rising)["SPY"] == 1.0
+    assert strategy.target_weights(falling)["SPY"] == 0.0
+    assert strategy.target_weights(rising.head(150))["SPY"] == 0.0  # not enough history yet
+    with pytest.raises(ValueError, match="must be one of"):
+        TrendFilter(["SPY"], "BIL", 252, FilterConfig(), "QQQ")

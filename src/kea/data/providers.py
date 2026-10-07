@@ -8,7 +8,9 @@ and caches whatever succeeds.
 
 from __future__ import annotations
 
+import io
 import time as _time
+import zipfile
 from collections.abc import Callable
 from datetime import UTC, date, datetime
 from typing import Any, Protocol
@@ -138,6 +140,9 @@ class NasdaqProvider:
     """
 
     name = "nasdaq"
+    # Physical-metal trusts never distribute, so their price history is already a
+    # total-return history even where Nasdaq publishes no dividend table.
+    NON_DISTRIBUTING = frozenset({"GLD", "IAU", "GLDM", "SGOL", "SLV", "SIVR", "PPLT", "PALL"})
     HISTORICAL = "https://api.nasdaq.com/api/quote/{symbol}/historical"
     DIVIDENDS = "https://api.nasdaq.com/api/quote/{symbol}/dividends"
     ASSET_CLASSES = ("etf", "stocks")
@@ -166,6 +171,8 @@ class NasdaqProvider:
         else:
             raise DataUnavailable(f"nasdaq {symbol}: no price history")
         bars = parse_nasdaq_rows(rows)
+        if symbol in self.NON_DISTRIBUTING:
+            return finalize_bars(bars)
         dividends = self._dividends(symbol, asset_class)
         if dividends is None:
             if not self.allow_price_only:
@@ -325,11 +332,73 @@ class TigerProvider:
         return finalize_bars(bars)
 
 
+# --------------------------------------------------------------- French
+
+
+class FrenchProvider:
+    """Kenneth French's data library: daily US market and T-bill returns since July 1926.
+
+    Not tradable. It provides two synthetic total-return indices so Kea's ideas can be
+    tested on a century of data rather than one decade: `MARKET` (all US stocks,
+    value-weighted, dividends reinvested) and `TBILL` (one-month Treasury bills).
+    An index has no separate open, so each bar's open equals its close and a
+    "next open" fill happens at the next day's close: a conservative one-day delay.
+    """
+
+    name = "french"
+    URL = (
+        "https://mba.tuck.dartmouth.edu/pages/faculty/ken.french/ftp/"
+        "F-F_Research_Data_Factors_daily_CSV.zip"
+    )
+    SYMBOLS = ("MARKET", "TBILL")
+
+    def __init__(self, session: requests.Session | None = None) -> None:
+        self.session = session or http_session()
+        self._returns: pd.DataFrame | None = None
+
+    def fetch(self, symbol: str, start: date) -> pd.DataFrame:
+        if symbol not in self.SYMBOLS:
+            raise DataUnavailable(f"french: unknown symbol {symbol} (use MARKET or TBILL)")
+        returns = self._load()
+        daily = returns["RF"] if symbol == "TBILL" else returns["Mkt-RF"] + returns["RF"]
+        daily = daily[daily.index >= pd.Timestamp(start)]
+        level = 100 * (1 + daily / 100).cumprod()
+        frame = pd.DataFrame({"open": level, "high": level, "low": level, "close": level})
+        return finalize_bars(frame.assign(volume=0.0))
+
+    def _load(self) -> pd.DataFrame:
+        if self._returns is None:
+            try:
+                response = self.session.get(self.URL, timeout=60)
+            except requests.RequestException as exc:
+                raise DataUnavailable(f"french: {exc}") from exc
+            if response.status_code != 200:
+                raise DataUnavailable(f"french: HTTP {response.status_code}")
+            with zipfile.ZipFile(io.BytesIO(response.content)) as archive:
+                text = archive.read(archive.namelist()[0]).decode("latin-1")
+            self._returns = parse_french_daily(text)
+        return self._returns
+
+
+def parse_french_daily(text: str) -> pd.DataFrame:
+    """Daily factor returns in percent, indexed by date (header and footer lines skipped)."""
+    rows = []
+    for line in text.splitlines():
+        cells = [c.strip() for c in line.split(",")]
+        if len(cells) >= 5 and len(cells[0]) == 8 and cells[0].isdigit():
+            rows.append([cells[0], *map(float, cells[1:5])])
+    if not rows:
+        raise DataUnavailable("french: no data rows found")
+    frame = pd.DataFrame(rows, columns=["date", "Mkt-RF", "SMB", "HML", "RF"])
+    return frame.set_index(pd.to_datetime(frame.pop("date"), format="%Y%m%d"))
+
+
 PROVIDERS: dict[str, Callable[[], PriceProvider]] = {
     "yahoo": YahooProvider,
     "nasdaq": NasdaqProvider,
     "binance": BinanceProvider,
     "tiger": TigerProvider,
+    "french": FrenchProvider,
 }
 
 

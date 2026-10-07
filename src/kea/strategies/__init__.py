@@ -10,7 +10,7 @@ from kea.config import Config
 from kea.data.history import PriceHistory
 from kea.strategies.base import Strategy
 from kea.strategies.ml import MLForecaster
-from kea.strategies.trend import DualMomentum, StaticWeights, TrendFollowing
+from kea.strategies.trend import DualMomentum, StaticWeights, TrendFilter, TrendFollowing
 
 
 class Ensemble(Strategy):
@@ -52,6 +52,8 @@ def build_member(name: str, config: Config) -> Strategy:
         return DualMomentum(*args, s.momentum)
     if name == "ml":
         return MLForecaster(*args, s.ml)
+    if name == "trend_filter":
+        return TrendFilter(*args, s.trend_filter, s.trend_filter.asset or u.benchmark)
     raise ValueError(f"unknown strategy '{name}' (choose from {', '.join(STRATEGY_NAMES)})")
 
 
@@ -78,7 +80,7 @@ def build_benchmark(name: str, config: Config) -> Strategy:
     raise ValueError(f"unknown benchmark '{name}'")
 
 
-STRATEGY_NAMES = ("trend", "momentum", "ml", "ensemble")
+STRATEGY_NAMES = ("trend", "momentum", "ml", "trend_filter", "ensemble")
 BENCHMARK_NAMES = ("buy_and_hold", "sixty_forty")
 
 __all__ = [
@@ -89,6 +91,7 @@ __all__ = [
     "MLForecaster",
     "StaticWeights",
     "Strategy",
+    "TrendFilter",
     "TrendFollowing",
     "build_benchmark",
     "build_member",

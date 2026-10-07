@@ -39,3 +39,6 @@ min_trade_value = 50.0
 [broker]
 initial_cash = 10000.0
 state_dir = ".kea/crypto-paper"
+
+[report]
+trials = 5

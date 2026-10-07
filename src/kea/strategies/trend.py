@@ -6,7 +6,7 @@ from collections.abc import Mapping, Sequence
 
 import pandas as pd
 
-from kea.config import MomentumConfig, TrendConfig
+from kea.config import FilterConfig, MomentumConfig, TrendConfig
 from kea.data.history import PriceHistory
 from kea.strategies.base import (
     Strategy,
@@ -100,6 +100,46 @@ class DualMomentum(Strategy):
         leaders = scores[scores > hurdle].nlargest(cfg.top_k)
         weights = self._empty()
         weights[leaders.index] = 1.0 / cfg.top_k
+        return weights
+
+
+class TrendFilter(Strategy):
+    """Hold one market while it trades above its moving average; otherwise hold cash.
+
+    The classic retail trend rule (Faber 2007, "A Quantitative Approach to Tactical
+    Asset Allocation"). It gives up a little return in bull markets in exchange for
+    stepping aside during long bear markets, and it trades only a few times a year,
+    which matters when every order costs a flat fee.
+    """
+
+    name = "trend_filter"
+
+    def __init__(
+        self,
+        symbols: Sequence[str],
+        cash_symbol: str | None,
+        periods_per_year: int,
+        config: FilterConfig,
+        asset: str,
+    ) -> None:
+        super().__init__(symbols, cash_symbol, periods_per_year)
+        if asset not in self.symbols:
+            raise ValueError(f"trend_filter asset {asset} must be one of the universe symbols")
+        self.config = config
+        self.asset = asset
+
+    @property
+    def warmup(self) -> int:
+        return self.config.sma_days + 1
+
+    def target_weights(self, history: PriceHistory) -> pd.Series:
+        weights = self._empty()
+        close = history.close[self.asset].dropna()
+        if len(close) < self.config.sma_days or pd.isna(history.close[self.asset].iloc[-1]):
+            return weights
+        average = close.iloc[-self.config.sma_days :].mean()
+        if close.iloc[-1] > average:
+            weights[self.asset] = 1.0
         return weights
 
 

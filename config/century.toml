@@ -1,0 +1,46 @@
+# Research only: Kea's trend ideas on a century of US stock market data.
+#
+# Kenneth French's data library supplies daily returns for the whole US stock
+# market and one-month T-bills from July 1926. They are indices, not things you
+# can trade, so this tests the ideas rather than the ETF implementation:
+#
+#   kea -c config/century.toml compare
+#
+# The volatility cap and per-asset limit are switched off so each signal is
+# tested on its own. Costs are a flat 10 basis points per trade.
+
+[universe]
+symbols = ["MARKET"]
+cash_symbol = "TBILL"
+benchmark = "MARKET"
+
+[data]
+provider = "french"
+start = "1926-07-01"
+
+[strategy]
+name = "ensemble"
+members = ["trend", "momentum", "trend_filter"]
+
+[strategy.momentum]
+top_k = 1
+
+[risk]
+target_vol = 1.0
+max_weight = 1.0
+
+[execution]
+fees = "bps"
+fee_bps = 5.0
+slippage_bps = 5.0
+whole_shares = false
+min_trade_value = 0.0
+
+[broker]
+initial_cash = 10000.0
+state_dir = ".kea/century"
+
+[report]
+trials = 5
+title = "A century of US stocks"
+summary = "The same trend rules on the whole US stock market since 1926, using Kenneth French's research data. These are indices rather than ETFs, so this tests the ideas, not the exact portfolio, with a flat 10 basis points per trade."

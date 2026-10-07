@@ -37,11 +37,16 @@ FONTS = (
 COLORS = ["--s1", "--s2", "--s3", "--s4", "--s5", "--s6", "--s7"]
 ASSET_CLASSES = {
     **dict.fromkeys(
-        ["SPY", "VOO", "IVV", "SPLG", "VTI", "QQQ", "QQQM", "IWM", "VTWO"], "US stocks"
+        ["SPY", "VOO", "IVV", "SPLG", "VTI", "VONE", "VTHR", "QQQ", "QQQM", "IWM", "VTWO"],
+        "US stocks",
     ),
-    **dict.fromkeys(["EFA", "EEM", "VEA", "VWO", "VXUS", "ACWX", "IEFA", "IEMG"], "Intl stocks"),
+    **dict.fromkeys(
+        ["EFA", "EEM", "VEA", "VWO", "VXUS", "ACWX", "IXUS", "EMXC", "IEFA", "IEMG"], "Intl stocks"
+    ),
     **dict.fromkeys(["VNQ", "VNQI", "SCHH"], "Real estate"),
-    **dict.fromkeys(["TLT", "IEF", "LQD", "BND", "AGG", "SHY", "IEI", "TIP", "EMB"], "Bonds"),
+    **dict.fromkeys(
+        ["TLT", "IEF", "LQD", "VCIT", "VGIT", "BND", "AGG", "SHY", "IEI", "TIP", "EMB"], "Bonds"
+    ),
     **dict.fromkeys(["GLD", "IAU", "GLDM"], "Gold"),
     **dict.fromkeys(["DBC", "PDBC", "GSG"], "Commodities"),
     **dict.fromkeys(["BIL", "SHV", "SGOV"], "Cash"),
@@ -52,13 +57,18 @@ MAX_POINTS = 700
 esc = html.escape
 
 
+INDEX_NAMES = {"MARKET": "the US market", "TBILL": "T-bills"}
+
+
 def strategy_label(name: str, config: Config) -> str:
+    benchmark = INDEX_NAMES.get(config.universe.benchmark, config.universe.benchmark)
     labels = {
         "trend": "Trend following",
         "momentum": "Dual momentum",
         "ml": "ML forecaster",
+        "trend_filter": "200-day filter",
         "ensemble": "Ensemble",
-        "buy_and_hold": f"Buy and hold {config.universe.benchmark}",
+        "buy_and_hold": f"Buy and hold {benchmark}",
         "sixty_forty": "60/40 stocks and bonds",
     }
     return labels.get(name, name)
@@ -75,6 +85,23 @@ class Line:
     area: bool = False
 
 
+@dataclass(frozen=True)
+class Study:
+    """An extra comparison shown after the main backtest, such as the century check."""
+
+    key: str
+    config: Config
+    comparison: Comparison
+
+
+def entity_colors(names: Sequence[str]) -> dict[str, str]:
+    """Colour follows the entity: benchmarks keep their colour in every chart."""
+    fixed = {"buy_and_hold": "--s2", "sixty_forty": "--s3"}
+    taken = {fixed[n] for n in names if n in fixed}
+    free = iter(c for c in COLORS if c not in taken)
+    return {name: fixed.get(name) or next(free) for name in names}
+
+
 def write_report(
     path: Path,
     config: Config,
@@ -84,9 +111,11 @@ def write_report(
     ledger: Ledger | None = None,
     sizes: pd.DataFrame | None = None,
     standalone: bool = True,
+    studies: Sequence[Study] = (),
 ) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(render_report(config, history, comparison, ledger, sizes, standalone))
+    page = render_report(config, history, comparison, ledger, sizes, standalone, studies)
+    path.write_text(page)
 
 
 def render_report(
@@ -96,11 +125,13 @@ def render_report(
     ledger: Ledger | None = None,
     sizes: pd.DataFrame | None = None,
     standalone: bool = True,
+    studies: Sequence[Study] = (),
 ) -> str:
     sections = [
         masthead(config, history, comparison, live=ledger is not None),
         paper_section(config, ledger) if ledger is not None else "",
         backtest_section(config, history, comparison) if comparison is not None else "",
+        *(study_section(study) for study in studies),
         costs_section(config, comparison, sizes),
         method_section(config),
         footer(),
@@ -179,11 +210,15 @@ def paper_section(config: Config, ledger: Ledger) -> str:
   <p class="secondary">The only performance that cannot be overfitted: decisions made in real time,
   filled at the next session's open, committed to git every day.</p></div>"""
     if len(track) < 2:
-        started = f" on {track.index[0]:%d %b %Y}" if len(track) else ""
+        if len(track):
+            lead = f"Paper trading started on {track.index[0]:%d %b %Y}."
+            body = "The first orders fill at the next session's open, and the record grows by one point each trading day."
+        else:
+            lead = "Paper trading has not started yet."
+            body = "The record begins with the first scheduled run and grows by one point each trading day."
         return f"""<section id="paper">{head}
-  <div class="callout"><strong>Paper trading started{started}.</strong>
-  <span>The first orders fill at the next session's open, and the record grows by one point each trading
-  day. Check back in a few weeks; judge it after a few months, not a few days.</span></div>
+  <div class="callout"><strong>{lead}</strong>
+  <span>{body} Check back in a few weeks; judge it after a few months, not a few days.</span></div>
   {journal_table(events)}</section>"""
 
     equity, bench = track["equity"], track["benchmark"].astype(float)
@@ -253,41 +288,16 @@ def backtest_section(config: Config, history: PriceHistory, comparison: Comparis
             f"benchmark {pct(bp.max_drawdown)}" if bp else None,
         ),
         tile(
-            "Probability the skill is real",
-            pct(main.dsr, 0),
-            f"deflated Sharpe ratio, {comparison.trials} strategies tried",
+            "Chance it truly beats buy and hold",
+            pct(main.beats_benchmark, 0),
+            f"risk-adjusted, deflated for {comparison.trials} strategies tried",
         ),
     ]
     contenders = [main] + [entries[n] for n in ("buy_and_hold", "sixty_forty") if n in entries]
-    growth = line_chart(
-        "growth-chart",
-        f"Growth of {money(comparison.initial_cash, 0)}",
-        "Log scale, after fees and slippage",
-        [
-            Line(strategy_label(e.name, config), e.result.equity, COLORS[i])
-            for i, e in enumerate(contenders)
-        ],
-        fmt="money",
-        log=True,
-        height=340,
-    )
-    drawdowns = line_chart(
-        "drawdown-chart",
-        "Drawdowns",
-        "Distance below the previous high",
-        [
-            Line(
-                strategy_label(e.name, config), drawdown_series(e.result.equity), COLORS[i], i == 0
-            )
-            for i, e in enumerate(contenders)
-        ],
-        fmt="pct",
-        zero="top",
-        height=240,
-    )
+    growth, drawdowns = growth_and_drawdowns("", config, comparison, contenders)
     return f"""<section id="backtest">
   <div class="section-head"><span class="eyebrow">Backtest · {comparison.start} to {comparison.end}</span>
-  <h2>{esc(strategy_label(main.name, config))} against doing nothing clever</h2>
+  <h2>{esc(strategy_label(main.name, config))} against simply holding the market</h2>
   <p class="secondary">Signals at each close, fills at the next open, Tiger's fee schedule, no leverage.
   Parameters were fixed from published research before testing, not tuned to this data.</p></div>
   <div class="tiles">{"".join(tiles)}</div>
@@ -300,6 +310,85 @@ def backtest_section(config: Config, history: PriceHistory, comparison: Comparis
 </section>"""
 
 
+def growth_and_drawdowns(
+    key: str, config: Config, comparison: Comparison, entries: Sequence[Entry]
+) -> tuple[str, str]:
+    colors = entity_colors([e.name for e in entries])
+    prefix = f"{key}-" if key else ""
+    growth = line_chart(
+        f"{prefix}growth-chart",
+        f"Growth of {money(comparison.initial_cash, 0)}",
+        "Log scale, after fees and slippage",
+        [Line(strategy_label(e.name, config), e.result.equity, colors[e.name]) for e in entries],
+        fmt="money",
+        log=True,
+        height=340,
+    )
+    drawdowns = line_chart(
+        f"{prefix}drawdown-chart",
+        "Drawdowns",
+        "Distance below the previous high",
+        [
+            Line(
+                strategy_label(e.name, config),
+                drawdown_series(e.result.equity),
+                colors[e.name],
+                area=i == 0,
+            )
+            for i, e in enumerate(entries)
+        ],
+        fmt="pct",
+        zero="top",
+        height=240,
+    )
+    return growth, drawdowns
+
+
+def study_section(study: Study) -> str:
+    config, comparison = study.config, study.comparison
+    entries = {e.name: e for e in comparison.entries}
+    holder = entries.get("buy_and_hold")
+    rules = [e for e in comparison.entries if not e.benchmark and e.name != "ml"]
+    charted = [*rules[:3], *([holder] if holder else [])]
+    growth, drawdowns = growth_and_drawdowns(study.key, config, comparison, charted)
+    years = charted[0].performance.years
+    title = config.report.title or f"Study: {', '.join(config.universe.symbols)}"
+    summary = (
+        f"<p class='secondary'>{esc(config.report.summary)}</p>" if config.report.summary else ""
+    )
+    callout = ""
+    if holder is not None and rules:
+        worst = [e.performance.max_drawdown for e in rules]
+        parts = [
+            f"Over {years:.0f} years, buy and hold fell as much as {pct(holder.performance.max_drawdown, 0)}; "
+            f"the rules' worst falls were {pct(min(worst), 0)} to {pct(max(worst), 0)}."
+        ]
+        if holder.performance.cagr > 0:
+            kept = [e.performance.cagr / holder.performance.cagr for e in rules]
+            parts.append(
+                f"They kept {pct(min(kept), 0)} to {pct(max(kept), 0)} of its annual return."
+            )
+        edges = [e.beats_benchmark for e in rules if e.beats_benchmark is not None]
+        if edges:
+            parts.append(
+                "The chance any of them truly beats buy and hold on a risk-adjusted basis is at most "
+                f"{pct(max(edges), 0)} after the {comparison.trials}-trial haircut."
+            )
+        callout = (
+            '<div class="callout"><strong>The short version</strong><span>'
+            + " ".join(parts)
+            + "</span></div>"
+        )
+    return f"""<section id="{esc(study.key)}">
+  <div class="section-head"><span class="eyebrow">Study · {comparison.start[:4]} to {comparison.end[:4]}</span>
+  <h2>{esc(title)}</h2>{summary}</div>
+  {callout}
+  {growth}
+  {drawdowns}
+  {comparison_table(config, comparison, heading="Every rule in this study")}
+</section>"""
+
+
 def skill_callout(main: Entry, bench: Entry | None, comparison: Comparison) -> str:
     p = main.performance
     lines = []
@@ -309,17 +398,18 @@ def skill_callout(main: Entry, bench: Entry | None, comparison: Comparison) -> s
             f"It returned {pct(p.cagr)} a year against {pct(b.cagr)} for buy and hold, with "
             f"{pct(p.max_drawdown)} as its worst fall against {pct(b.max_drawdown)}."
         )
-    if main.dsr is not None and not math.isnan(main.dsr):
+    edge = main.beats_benchmark
+    if edge is not None and not math.isnan(edge):
         verdict = (
-            "strong evidence of a real edge"
-            if main.dsr >= 0.95
+            "strong evidence of an edge"
+            if edge >= 0.95
             else "suggestive, not conclusive"
-            if main.dsr >= 0.8
-            else "not enough evidence of skill beyond luck"
+            if edge >= 0.8
+            else "no reliable edge over simply holding the market"
         )
         lines.append(
-            f"After discounting for the {comparison.trials} strategies tried, the chance its Sharpe "
-            f"ratio reflects real skill is {pct(main.dsr, 0)}: {verdict}."
+            f"After discounting for the {comparison.trials} strategies tried, the chance its "
+            f"risk-adjusted return genuinely beats buy and hold is {pct(edge, 0)}: {verdict}."
         )
     s = comparison.ml_skill
     if s:
@@ -389,7 +479,9 @@ def asset_class_weights(weights: pd.DataFrame, config: Config) -> pd.DataFrame:
     return frame.loc[:, frame.max() > 0.005]
 
 
-def comparison_table(config: Config, comparison: Comparison) -> str:
+def comparison_table(
+    config: Config, comparison: Comparison, heading: str = "Every strategy, same window, same fees"
+) -> str:
     rows, classes = [], []
     for e in comparison.entries:
         p, t = e.performance, e.trading
@@ -404,7 +496,7 @@ def comparison_table(config: Config, comparison: Comparison) -> str:
                 pct(p.worst_year),
                 count(t["orders_per_year"]),
                 pct(t["fee_drag"], 2),
-                "n/a" if e.dsr is None else pct(e.dsr, 0),
+                "n/a" if e.beats_benchmark is None else pct(e.beats_benchmark, 0),
             ]
         )
         classes.append(
@@ -419,14 +511,14 @@ def comparison_table(config: Config, comparison: Comparison) -> str:
         "Worst year",
         "Orders/yr",
         "Fee drag",
-        "Real skill (DSR)",
+        "Beats buy and hold",
     ]
     return (
-        '<div class="section-head"><h3>Every strategy, same window, same fees</h3>'
-        '<p class="secondary">Sharpe is measured in excess of T-bills. "Real skill" is the deflated '
-        "Sharpe ratio: the probability a strategy's Sharpe is not a fluke, after accounting for how "
-        "many were tried. Benchmarks are not scored.</p></div>"
-        + data_table(headers, rows, classes, raw=True)
+        f'<div class="section-head"><h3>{esc(heading)}</h3>'
+        '<p class="secondary">Sharpe is measured in excess of T-bills. "Beats buy and hold" is the '
+        "probability that a strategy's Sharpe ratio genuinely exceeds buy-and-hold's, after "
+        "discounting for how many strategies were tried (the deflated Sharpe ratio). Benchmarks are "
+        "not scored.</p></div>" + data_table(headers, rows, classes, raw=True)
     )
 
 

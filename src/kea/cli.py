@@ -77,12 +77,20 @@ def build_parser() -> argparse.ArgumentParser:
     command("data", cmd_data, "fetch market data and show its sources")
 
     p = command("backtest", cmd_backtest, "backtest one strategy")
-    p.add_argument("--strategy", help="trend, momentum, ml, ensemble, buy_and_hold, sixty_forty")
+    p.add_argument(
+        "--strategy",
+        help="trend, momentum, ml, trend_filter, ensemble, buy_and_hold or sixty_forty",
+    )
     p.add_argument("--cash", type=float, help="starting capital in USD")
     p.add_argument("--start", type=date.fromisoformat, help="first decision date (YYYY-MM-DD)")
     p.add_argument("--end", type=date.fromisoformat, help="last date (YYYY-MM-DD)")
 
-    p = command("compare", cmd_compare, "compare all strategies against benchmarks")
+    p = command("compare", cmd_compare, "compare strategies against benchmarks")
+    p.add_argument(
+        "--strategies",
+        type=strategy_list,
+        help="comma-separated strategies (default: the configured one and its members)",
+    )
     p.add_argument("--cash", type=float, help="starting capital in USD")
     p.add_argument("--trials", type=int, help="total strategy variants ever tried (for DSR)")
     p.add_argument("--sizes", action="store_true", help="also test account-size sensitivity")
@@ -98,12 +106,26 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = command("report", cmd_report, "write the HTML dashboard (track record + backtests)")
     p.add_argument("--html", type=Path, default=Path("reports/index.html"))
+    p.add_argument("--strategies", type=strategy_list, help="strategies to compare")
     p.add_argument("--cash", type=float, help="starting capital in USD for the backtests")
     p.add_argument("--no-backtest", action="store_true", help="track record only (fast)")
+    p.add_argument(
+        "--study",
+        type=Path,
+        action="append",
+        default=[],
+        metavar="CONFIG",
+        help="add a study from another config, e.g. config/century.toml (repeatable)",
+    )
+    p.add_argument("--fragment", action="store_true", help="omit <html>/<head>/<body> wrappers")
     return parser
 
 
 # ------------------------------------------------------------------ helpers
+
+
+def strategy_list(text: str) -> list[str]:
+    return [name.strip() for name in text.split(",") if name.strip()]
 
 
 def load_market(config: Config) -> tuple[MarketData, PriceHistory]:
@@ -201,12 +223,20 @@ def cmd_compare(config: Config, args: argparse.Namespace) -> int:
     from kea.research import account_size_sensitivity, compare, sizes_text
 
     market, history = load_market(config)
-    comparison = compare(config, history, initial_cash=args.cash, trials=args.trials)
+    comparison = compare(
+        config, history, strategies=args.strategies, initial_cash=args.cash, trials=args.trials
+    )
     comparison.data_sources = dict(market.sources)
     print(comparison.to_text())
     sizes = None
     if args.sizes:
-        sizes = account_size_sensitivity(config, history, config.strategy.name, ACCOUNT_SIZES)
+        sizes = account_size_sensitivity(
+            config,
+            history,
+            config.strategy.name,
+            ACCOUNT_SIZES,
+            start=date.fromisoformat(comparison.start),
+        )
         print(f"\nAccount size vs fees ({config.strategy.name}, {config.execution.fees} fees):")
         print(sizes_text(sizes))
     if args.json:
@@ -287,15 +317,30 @@ def cmd_resume(config: Config, args: argparse.Namespace) -> int:
 
 def cmd_report(config: Config, args: argparse.Namespace) -> int:
     from kea.ledger import Ledger
-    from kea.report import write_report
+    from kea.report import Study, write_report
     from kea.research import compare
 
     market, history = load_market(config)
     comparison = None
     if not args.no_backtest:
-        comparison = compare(config, history, initial_cash=args.cash)
+        comparison = compare(config, history, strategies=args.strategies, initial_cash=args.cash)
         comparison.data_sources = dict(market.sources)
-    write_report(args.html, config, history, comparison, ledger=Ledger(config.broker.state_dir))
+    studies = []
+    for path in args.study:
+        study_config = load_config(path)
+        study_market, study_history = load_market(study_config)
+        study = compare(study_config, study_history)
+        study.data_sources = dict(study_market.sources)
+        studies.append(Study(path.stem, study_config, study))
+    write_report(
+        args.html,
+        config,
+        history,
+        comparison,
+        ledger=Ledger(config.broker.state_dir),
+        standalone=not args.fragment,
+        studies=studies,
+    )
     print(f"report written to {args.html}")
     return 0
 

@@ -80,6 +80,8 @@ def test_cli_backtest_compare_and_overrides(monkeypatch, tmp_path, capsys, histo
     monkeypatch.setattr(cli, "MarketData", lambda *a, **k: FakeMarketData(history))
     universe = [
         "-s", 'universe.symbols=["UP","FLAT","DOWN","SPY"]',
+        "-s", "universe.cash_symbol=BIL",
+        "-s", "universe.benchmark=SPY",
         "-s", f"broker.state_dir={tmp_path / 'state'}",
     ]  # fmt: skip
     assert cli.main([*universe, "backtest", "--strategy", "trend"]) == 0
@@ -93,6 +95,8 @@ def test_cli_backtest_compare_and_overrides(monkeypatch, tmp_path, capsys, histo
             "-s",
             'strategy.members=["trend"]',
             "compare",
+            "--strategies",
+            "trend,ml",
             "--json",
             str(out_json),
             "--markdown",
@@ -110,3 +114,15 @@ def test_cli_backtest_compare_and_overrides(monkeypatch, tmp_path, capsys, histo
 def test_cli_reports_config_errors_cleanly(capsys):
     assert cli.main(["-s", "risk.target_volatility=0.1", "data"]) == 1
     assert "did you mean 'target_vol'" in capsys.readouterr().err
+
+
+def test_report_studies_keep_benchmark_colours(config, history, comparison):
+    from kea.report import Study, entity_colors
+
+    page = render_report(
+        config, history, comparison, studies=[Study("century", config, comparison)]
+    )
+    assert 'id="growth-chart"' in page and 'id="century-growth-chart"' in page
+    assert "Every rule in this study" in page
+    assert entity_colors(["trend", "buy_and_hold"]) == {"trend": "--s1", "buy_and_hold": "--s2"}
+    assert entity_colors(["buy_and_hold", "trend", "momentum"])["buy_and_hold"] == "--s2"

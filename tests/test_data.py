@@ -235,3 +235,30 @@ def test_store_raises_when_nothing_is_available(tmp_path):
     market = MarketData(DataConfig(cache_dir=tmp_path), providers=[StubProvider("p", error="down")])
     with pytest.raises(DataUnavailable, match="down"):
         market.bars("SPY")
+
+
+FRENCH_SAMPLE = """This file was created by using the 202608 CRSP database.
+The Tbill return is the simple daily rate.
+
+,Mkt-RF,SMB,HML,RF
+19260701,    0.09,   -0.23,   -0.28,    0.01
+19260702,    0.45,   -0.34,   -0.03,    0.01
+
+Copyright 2026 Eugene F. Fama and Kenneth R. French
+"""
+
+
+def test_french_daily_file_becomes_total_return_indices():
+    from kea.data.providers import FrenchProvider, parse_french_daily
+
+    returns = parse_french_daily(FRENCH_SAMPLE)
+    assert list(returns.columns) == ["Mkt-RF", "SMB", "HML", "RF"]
+    assert returns.loc["1926-07-02", "Mkt-RF"] == pytest.approx(0.45)
+
+    provider = FrenchProvider(session=object())
+    provider._returns = returns
+    market = provider.fetch("MARKET", pd.Timestamp("1926-01-01").date())
+    assert market["close"].tolist() == pytest.approx([100 * 1.001, 100 * 1.001 * 1.0046])
+    assert (market["open"] == market["close"]).all()
+    with pytest.raises(DataUnavailable, match="unknown symbol"):
+        provider.fetch("SPY", pd.Timestamp("1926-01-01").date())

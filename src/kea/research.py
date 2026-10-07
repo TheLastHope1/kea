@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from collections.abc import Sequence
 from dataclasses import dataclass, field
+from datetime import date
 from typing import Any
 
 import pandas as pd
@@ -20,7 +21,7 @@ from kea.metrics import (
     performance,
     trading_stats,
 )
-from kea.strategies import BENCHMARK_NAMES, STRATEGY_NAMES, build_strategy
+from kea.strategies import BENCHMARK_NAMES, build_strategy
 from kea.strategies.ml import score_predictions
 
 
@@ -31,7 +32,7 @@ class Entry:
     performance: Performance
     trading: dict[str, float]
     benchmark: bool
-    dsr: float | None = None
+    beats_benchmark: float | None = None
 
     def row(self) -> dict[str, Any]:
         p = self.performance
@@ -46,7 +47,7 @@ class Entry:
             "orders_per_year": self.trading["orders_per_year"],
             "fee_drag": self.trading["fee_drag"],
             "psr": p.psr,
-            "dsr": self.dsr,
+            "beats_benchmark": self.beats_benchmark,
         }
 
 
@@ -74,8 +75,9 @@ class Comparison:
 
     def header(self) -> str:
         return (
-            f"{self.start} to {self.end}, start {money(self.initial_cash)}, "
-            f"{self.trials} trial(s) counted for the deflated Sharpe ratio"
+            f"{self.start} to {self.end}, start {money(self.initial_cash)}. "
+            f"'Beats B&H' is the probability a strategy's Sharpe ratio truly beats buy-and-hold, "
+            f"deflated for {self.trials} trial(s)."
         )
 
     def ml_summary(self) -> str | None:
@@ -103,8 +105,9 @@ class Comparison:
             f"### Kea backtest: {self.start} to {self.end}",
             "",
             f"Start {money(self.initial_cash)}. Sharpe is in excess of "
-            f"{self.risk_free or 'zero (no cash proxy)'}. DSR = deflated Sharpe ratio over "
-            f"{self.trials} trial(s): the probability of real skill.",
+            f"{self.risk_free or 'zero (no cash proxy)'}. *Beats B&H* is the probability that a "
+            f"strategy's Sharpe ratio genuinely beats buy-and-hold, deflated for "
+            f"{self.trials} trial(s) (Bailey and López de Prado).",
             "",
             "| " + " | ".join(titles) + " |",
             "|---|" + "---:|" * (len(titles) - 1),
@@ -147,8 +150,8 @@ COLUMNS = [
     ("worst_year", pct, "Worst year"),
     ("orders_per_year", count, "Orders/yr"),
     ("fee_drag", lambda v: pct(v, 2), "Fee drag"),
-    ("psr", lambda v: pct(v, 0), "PSR"),
-    ("dsr", lambda v: pct(v, 0), "DSR"),
+    ("psr", lambda v: pct(v, 0), "P(Sharpe>0)"),
+    ("beats_benchmark", lambda v: pct(v, 0), "Beats B&H"),
 ]
 
 SIZE_COLUMNS = [
@@ -180,10 +183,16 @@ def default_benchmarks(config: Config) -> tuple[str, ...]:
     return BENCHMARK_NAMES if "IEF" in config.universe.symbols else ("buy_and_hold",)
 
 
+def default_strategies(config: Config) -> tuple[str, ...]:
+    """The configured strategy, plus its members when it is an ensemble."""
+    name = config.strategy.name
+    return (*config.strategy.members, name) if name == "ensemble" else (name,)
+
+
 def compare(
     config: Config,
     history: PriceHistory,
-    strategies: Sequence[str] = STRATEGY_NAMES,
+    strategies: Sequence[str] | None = None,
     benchmarks: Sequence[str] | None = None,
     initial_cash: float | None = None,
     trials: int | None = None,
@@ -197,7 +206,7 @@ def compare(
     """
     runners = [
         (name, Backtester(config, build_strategy(config, name), initial_cash), False)
-        for name in strategies
+        for name in (default_strategies(config) if strategies is None else strategies)
     ] + [
         (
             name,
@@ -239,10 +248,13 @@ def compare(
         )
 
     contenders = [e for e in entries if not e.benchmark]
-    sharpes = [per_period_sharpe(_excess(e.result.equity, risk_free)) for e in contenders]
-    n_trials = max(trials or len(contenders), len(contenders))
+    n_trials = max(trials or config.report.trials or len(contenders), len(contenders))
+    holder = next((e for e in entries if e.name == "buy_and_hold"), None)
+    hurdle = per_period_sharpe(_excess(holder.result.equity, risk_free)) if holder else 0.0
     for entry in contenders:
-        entry.dsr = deflated_sharpe(_excess(entry.result.equity, risk_free), sharpes, n_trials)
+        entry.beats_benchmark = deflated_sharpe(
+            _excess(entry.result.equity, risk_free), n_trials, benchmark_sharpe=hurdle
+        )
 
     ml_skill: dict[str, float] = {}
     for entry in contenders:
@@ -268,17 +280,23 @@ def compare(
 
 
 def account_size_sensitivity(
-    config: Config, history: PriceHistory, strategy: str, sizes: Sequence[float]
+    config: Config,
+    history: PriceHistory,
+    strategy: str,
+    sizes: Sequence[float],
+    start: date | None = None,
 ) -> pd.DataFrame:
     """How the same strategy fares at different account sizes under real fees.
 
-    A flat USD 2 commission is noise on USD 100k and a tax on USD 2k.
+    A flat USD 2 commission is noise on USD 100k and a tax on USD 2k. Pass the
+    comparison's `start` so these numbers share its window.
     """
     cash_symbol = config.universe.cash_symbol
     risk_free = history.close[cash_symbol] if cash_symbol else None
     rows = []
     for size in sizes:
-        result = Backtester(config, build_strategy(config, strategy), size).run(history)
+        runner = Backtester(config, build_strategy(config, strategy), size)
+        result = runner.run(history, start=start, end=config.backtest.end)
         perf = performance(result.equity, config.universe.periods_per_year, risk_free)
         stats = trading_stats(result.fills_frame(), result.equity)
         rows.append(

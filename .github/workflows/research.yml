@@ -1,6 +1,7 @@
-# Backtests on GitHub's runners, where Yahoo's long, dividend-adjusted history is
-# usually reachable. Only results are published (job summary + artifact), never
-# the raw vendor data. Informational: data-source hiccups never block a PR.
+# Research backtests on GitHub's runners, using the same free data sources the
+# agent uses (Nasdaq, Kenneth French, Binance). Only results are published: a
+# job summary and the HTML report as an artifact, never raw vendor data.
+# Informational: a data-source hiccup never blocks a pull request.
 name: Research backtests
 
 on:
@@ -14,7 +15,7 @@ permissions:
 jobs:
   compare:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     continue-on-error: true
     steps:
       - uses: actions/checkout@v4
@@ -26,11 +27,20 @@ jobs:
       - name: Install
         run: pip install .
       - name: Data sources
-        run: kea -v data
+        run: kea -v -c config/default.toml data
       - name: ETF portfolio vs benchmarks
-        run: kea compare --sizes --json reports/etf.json --markdown reports/etf.md --html reports/etf.html
+        run: kea -c config/default.toml compare --strategies trend,momentum,ml,ensemble --sizes --markdown reports/1-etf.md
+      - name: A century of US stocks
+        run: kea -c config/century.toml compare --markdown reports/2-century.md
+      - name: Small-account rule
+        run: kea -c config/small-account.toml compare --sizes --markdown reports/3-small-account.md
       - name: Crypto (research only)
-        run: kea -c config/crypto.toml compare --json reports/crypto.json --markdown reports/crypto.md
+        run: kea -c config/crypto.toml compare --markdown reports/4-crypto.md
+      - name: Dashboard
+        run: >-
+          kea -c config/default.toml report --html reports/index.html
+          --strategies trend,momentum,ml,ensemble
+          --study config/century.toml --study config/small-account.toml
       - name: Job summary
         if: always()
         run: cat reports/*.md >> "$GITHUB_STEP_SUMMARY" 2>/dev/null || true

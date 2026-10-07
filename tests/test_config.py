@@ -11,7 +11,8 @@ CONFIG_DIR = Path(__file__).parent.parent / "config"
 def test_defaults_are_valid():
     config = load_config(None)
     assert config == Config()
-    assert config.universe.tradable[-1] == "BIL"
+    assert config.universe.tradable[-1] == "SHY"
+    assert "ml" not in config.strategy.members  # opt-in until it shows real skill
     assert config.risk.max_gross <= 1.0
 
 
