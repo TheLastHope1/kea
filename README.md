@@ -106,6 +106,10 @@ The built-in simulator behaves like a real account: orders fill at the next open
 Tiger's fees, dividends arrive as cash on the ex-date, and splits change the share count.
 The dashboard compares it with buy-and-hold of the benchmark, dividends included.
 
+The dashboard is `index.html` at the root of `paper-ledger`. To read it in a browser,
+turn on GitHub Pages for that branch (Settings, then Pages, then "Deploy from a
+branch": `paper-ledger`, `/ (root)`). Pages is public for a public repository.
+
 Scheduled workflows run from the default branch, so this starts once the code is on
 `main`. To paper trade a Tiger account from Actions instead of the built-in simulator,
 add the three `TIGEROPEN_*` values as repository secrets and point the workflow at
