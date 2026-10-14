@@ -1,0 +1,45 @@
+[build-system]
+requires = ["hatchling>=1.24"]
+build-backend = "hatchling.build"
+
+[project]
+name = "kea-trader"
+version = "0.1.0"
+description = "Kea: a risk-first autonomous trading agent with honest backtesting and Tiger Brokers execution."
+readme = "README.md"
+requires-python = ">=3.11"
+authors = [{ name = "Nik" }, { name = "Theo" }]
+dependencies = [
+    "numpy>=1.26",
+    "pandas>=2.2",
+    "requests>=2.31",
+    "scikit-learn>=1.4",
+]
+
+[project.optional-dependencies]
+tiger = ["tigeropen>=3.8"]
+dev = ["pytest>=8", "ruff>=0.6"]
+
+[project.scripts]
+kea = "kea.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/kea"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+filterwarnings = ["error::FutureWarning"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "SIM", "RUF", "NPY", "PD002", "PTH", "RET"]
+ignore = ["RUF001", "RUF002", "RUF003"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["PD002", "E501"]
+"src/kea/report.py" = ["E501"]  # HTML templates read better unwrapped

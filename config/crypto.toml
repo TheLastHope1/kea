@@ -1,0 +1,44 @@
+# Research-only: the same machinery on crypto (Binance public market data).
+#
+# Kea has no crypto broker, so use this for backtests (`kea -c config/crypto.toml
+# compare`), not for `kea run`. Cash earns nothing here (no T-bill proxy), and
+# fees are a flat percentage like an exchange taker fee.
+
+[universe]
+symbols = ["BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSDT", "XRPUSDT", "ADAUSDT"]
+cash_symbol = "none"
+benchmark = "BTCUSDT"
+asset_class = "crypto"
+
+[data]
+provider = "binance"
+start = "2017-08-17"
+cache_dir = ".kea/cache"
+
+[strategy]
+members = ["trend", "momentum", "ml"]
+rebalance = "weekly"
+
+[strategy.momentum]
+top_k = 2
+
+[risk]
+target_vol = 0.40     # crypto's calmest months are wilder than equities' worst
+max_weight = 0.60
+halt_drawdown = 0.50
+halt_daily_loss = 0.20
+max_price_jump = 0.60
+
+[execution]
+fees = "bps"
+fee_bps = 10.0
+slippage_bps = 10.0
+whole_shares = false
+min_trade_value = 50.0
+
+[broker]
+initial_cash = 10000.0
+state_dir = ".kea/crypto-paper"
+
+[report]
+trials = 5

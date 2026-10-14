@@ -1,0 +1,52 @@
+# Research backtests on GitHub's runners, using the same free data sources the
+# agent uses (Nasdaq, Kenneth French, Binance). Only results are published: a
+# job summary and the HTML report as an artifact, never raw vendor data.
+# Informational: a data-source hiccup never blocks a pull request.
+name: Research backtests
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths: ["src/**", "config/**", ".github/workflows/research.yml"]
+
+permissions:
+  contents: read
+
+jobs:
+  compare:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+      - name: Install
+        run: pip install .
+      - name: Data sources
+        run: kea -v -c config/default.toml data
+      - name: ETF portfolio vs benchmarks
+        run: kea -c config/default.toml compare --strategies trend,momentum,ml,ensemble --sizes --markdown reports/1-etf.md
+      - name: A century of US stocks
+        run: kea -c config/century.toml compare --markdown reports/2-century.md
+      - name: Small-account rule
+        run: kea -c config/small-account.toml compare --sizes --markdown reports/3-small-account.md
+      - name: Crypto (research only)
+        run: kea -c config/crypto.toml compare --markdown reports/4-crypto.md
+      - name: Dashboard
+        run: >-
+          kea -c config/default.toml report --html reports/index.html
+          --strategies trend,momentum,ml,ensemble
+          --study config/century.toml --study config/small-account.toml
+      - name: Job summary
+        if: always()
+        run: cat reports/*.md >> "$GITHUB_STEP_SUMMARY" 2>/dev/null || true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: kea-research
+          path: reports/
+          if-no-files-found: ignore

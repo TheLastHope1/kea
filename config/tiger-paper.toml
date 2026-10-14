@@ -1,0 +1,18 @@
+# Trade a Tiger Brokers PAPER account through the OpenAPI.
+#
+# Credentials come from the environment (or a tiger_openapi_config.properties
+# file), never from this file:
+#   TIGEROPEN_TIGER_ID, TIGEROPEN_PRIVATE_KEY, TIGEROPEN_ACCOUNT
+#
+# Schedule `kea -c config/tiger-paper.toml run` during US market hours, e.g.
+# 10:30 New York time on weekdays. Decisions use the previous session's close;
+# market orders then fill near the open, which is what the backtest assumes.
+
+[data]
+provider = "auto"
+cache_dir = ".kea/cache"
+
+[broker]
+kind = "tiger"
+state_dir = ".kea/tiger-paper"
+allow_live = false   # a real-money account is refused while this is false
