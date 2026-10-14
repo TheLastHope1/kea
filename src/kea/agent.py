@@ -23,6 +23,7 @@ from typing import Any
 from kea.brokers.base import Account, Broker, OrderTicket
 from kea.config import Config
 from kea.data.store import MarketData
+from kea.fmt import money
 from kea.ledger import AgentState, Ledger
 from kea.orders import Fill, plan_orders
 from kea.risk import RiskManager, breaker_reason, data_problems
@@ -80,6 +81,8 @@ class Agent:
         with self.ledger.lock():
             state = self.ledger.load_state()
             report = self._cycle(state, dry_run, now or datetime.now(UTC))
+            if settled := describe_settlement(report.details):
+                report.message = f"{report.message}; {settled}"
             if not dry_run:
                 self.ledger.save_state(state)
                 self.ledger.record({"kind": "run", **report.to_event()})
@@ -103,6 +106,7 @@ class Agent:
         details: dict[str, Any] = {"data_sources": dict(self.market_data.sources)}
 
         fills = [f for f in broker.sync(history) if self._is_new(f, state)]
+        details.update(broker.settlement_notes())
         account = broker.account(prices)
         exposure = sum(
             w for s, w in account.weights(prices).items() if s != cfg.universe.cash_symbol
@@ -205,6 +209,27 @@ class Agent:
             return False
         state.seen_fills = [*state.seen_fills, fill.order_id][-500:]
         return True
+
+
+def describe_settlement(details: dict[str, Any]) -> str:
+    """One line on the dividends, splits and cancellations a sync brought, for the journal."""
+    events = details.get("distributions") or []
+    dividends = [e for e in events if e["kind"] == "dividend"]
+    parts = []
+    if dividends:
+        payers = ", ".join(sorted({e["symbol"] for e in dividends}))
+        parts.append(
+            f"received {money(sum(e['amount'] for e in dividends))} in dividends ({payers})"
+        )
+    for e in events:
+        if e["kind"] == "split":
+            ratio = e["ratio"]
+            terms = f"{ratio:g}-for-1" if ratio >= 1 else f"1-for-{1 / ratio:g}"
+            parts.append(f"{e['symbol']} split {terms}")
+    if cancelled := details.get("cancelled"):
+        names = ", ".join(sorted({o["symbol"] for o in cancelled}))
+        parts.append(f"{len(cancelled)} order(s) could not be filled ({names})")
+    return "; ".join(parts)
 
 
 def resume(ledger: Ledger) -> str:

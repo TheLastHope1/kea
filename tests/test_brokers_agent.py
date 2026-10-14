@@ -1,15 +1,17 @@
 import dataclasses
+import json
 from datetime import UTC, date, datetime
 from types import SimpleNamespace
 
 import pandas as pd
 import pytest
 
-from kea.agent import Agent, resume
+from kea.agent import Agent, describe_settlement, resume
 from kea.brokers.paper import PaperBroker
 from kea.brokers.tiger import LIVE_ENV_FLAG, LiveTradingBlocked, TigerBroker
 from kea.config import ExecutionConfig, RiskConfig, StrategyConfig
 from kea.data.history import PriceHistory
+from kea.fmt import money
 from kea.ledger import Ledger
 from kea.orders import Order, Side
 from kea.strategies import build_strategy
@@ -54,6 +56,99 @@ def test_paper_waives_commission_for_promotional_free_trades(tmp_path, history):
     first, second = broker.sync(history)
     assert first.fees == pytest.approx(0.003)  # settlement only
     assert second.fees == pytest.approx(2.003)
+
+
+def rescaled(history: PriceHistory, symbol: str, ex_day: pd.Timestamp, factor: float):
+    """`history` as a vendor serves it once `symbol` goes ex on `ex_day`: earlier prices scaled."""
+
+    def scale(frame: pd.DataFrame) -> pd.DataFrame:
+        frame = frame.copy()
+        frame.loc[frame.index < ex_day, symbol] *= factor
+        return frame
+
+    prices = (scale(getattr(history, f)) for f in ("open", "high", "low", "close"))
+    return PriceHistory(*prices, history.volume)
+
+
+def holding_spy(path, history, shares=10):
+    broker = PaperBroker(path, 10_000.0, ExecutionConfig(slippage_bps=0))
+    broker.submit([Order("SPY", Side.BUY, shares, 100.0)], history.dates[100].date())
+    broker.sync(history.until(history.dates[101]))  # fills at the open, marks at the close
+    return broker
+
+
+def test_paper_account_is_paid_dividends_when_a_holding_goes_ex(tmp_path, history):
+    broker = holding_spy(tmp_path / "paper.json", history)
+    mark_day, ex_day = history.dates[101], history.dates[102]
+    before = broker.account(history.until(mark_day).latest_prices()).equity
+    paid = rescaled(history, "SPY", ex_day, 1 - 0.5 / history.close.at[mark_day, "SPY"])
+
+    assert broker.sync(paid.until(ex_day)) == []
+    assert broker.distributions == [
+        {
+            "symbol": "SPY",
+            "day": ex_day.date().isoformat(),
+            "shares": 10,
+            "kind": "dividend",
+            "per_share": pytest.approx(0.5),
+            "amount": pytest.approx(5.0),
+        }
+    ]
+    # The account earned the holding's total return, exactly as the backtest assumes.
+    after = broker.account(paid.until(ex_day).latest_prices()).equity
+    total_return = paid.close.at[ex_day, "SPY"] - paid.close.at[mark_day, "SPY"]
+    assert after - before == pytest.approx(10 * total_return)
+
+    cash = broker.state["cash"]
+    broker.sync(paid.until(ex_day))  # the same session again
+    broker.sync(paid.until(history.dates[103]))  # and the next one
+    assert broker.state["cash"] == cash
+    reloaded = PaperBroker(tmp_path / "paper.json", 0.0, ExecutionConfig())
+    assert len(reloaded.state["distributions"]) == 1
+
+
+@pytest.mark.parametrize(
+    ("split", "shares", "in_lieu"),
+    [(2.0, 22.0, 0.0), (1.5, 16.0, 0.5), (0.25, 2.0, 0.75)],  # 2-for-1, 3-for-2, 1-for-4
+)
+def test_paper_account_follows_splits_without_gaining_or_losing(
+    tmp_path, history, split, shares, in_lieu
+):
+    broker = holding_spy(tmp_path / "paper.json", history, shares=11)
+    mark_day, ex_day = history.dates[101], history.dates[102]
+    before = broker.account(history.until(mark_day).latest_prices()).equity
+    after_split = rescaled(history, "SPY", ex_day, 1 / split)
+
+    broker.sync(after_split.until(ex_day))
+    assert broker.state["positions"] == {"SPY": shares}
+    [event] = broker.distributions
+    adjusted_close = after_split.close.at[mark_day, "SPY"]
+    assert event["kind"] == "split"
+    assert event["cash_in_lieu"] == pytest.approx(in_lieu * adjusted_close, abs=0.01)
+    assert broker.account({"SPY": adjusted_close}).equity == pytest.approx(before)
+
+
+@pytest.mark.parametrize("factor", [1 + 5e-5, 1 - 5e-5, 1.01])
+def test_paper_account_ignores_vendor_noise_and_upward_revisions(tmp_path, history, factor):
+    broker = holding_spy(tmp_path / "paper.json", history)
+    cash = broker.state["cash"]
+    ex_day = history.dates[102]
+    broker.sync(rescaled(history, "SPY", ex_day, factor).until(ex_day))
+    assert (broker.state["cash"], broker.state["positions"]) == (cash, {"SPY": 10})
+    assert broker.distributions == []
+
+
+def test_paper_accounts_saved_before_dividends_were_tracked_still_load(tmp_path, history):
+    path = tmp_path / "paper.json"
+    holding_spy(path, history)
+    state = json.loads(path.read_text())
+    del state["marks"], state["distributions"]
+    path.write_text(json.dumps(state))
+
+    broker = PaperBroker(path, 10_000.0, ExecutionConfig())
+    broker.sync(history.until(history.dates[102]))
+    assert broker.distributions == []  # nothing to compare against yet
+    assert broker.state["marks"]["SPY"]["day"] == history.dates[102].date().isoformat()
 
 
 # ------------------------------------------------------------------ agent
@@ -138,6 +233,39 @@ def test_agent_skips_trading_on_suspicious_data(agent_setup, history):
     report = agent.run(now=NOW)
     assert report.status == "skipped"
     assert "UP" in report.message
+
+
+def test_agent_journals_the_dividends_it_is_paid(agent_setup, history):
+    agent, market, ledger = agent_setup
+    agent.run(now=NOW)
+    market.upto += 1
+    agent.run(now=NOW)  # orders fill, holdings are marked at this close
+    symbol = sorted(agent.broker.state["positions"])[0]
+    market.full = rescaled(history, symbol, history.dates[market.upto], 0.99)
+    market.upto += 1
+
+    report = agent.run(now=NOW)
+    [event] = report.details["distributions"]
+    assert (event["symbol"], event["kind"]) == (symbol, "dividend")
+    assert ledger.journal()[-1]["distributions"] == [event]
+    assert report.message.endswith(f"; received {money(event['amount'])} in dividends ({symbol})")
+
+
+def test_settlement_summary_names_splits_and_unfilled_orders():
+    details = {
+        "distributions": [
+            {"symbol": "TLT", "kind": "dividend", "amount": 3.5},
+            {"symbol": "SHY", "kind": "dividend", "amount": 1.25},
+            {"symbol": "VONE", "kind": "split", "ratio": 2.0},
+            {"symbol": "PDBC", "kind": "split", "ratio": 0.25},
+        ],
+        "cancelled": [Order("GLD", Side.BUY, 3, 300.0).to_dict()],
+    }
+    assert describe_settlement(details) == (
+        "received $4.75 in dividends (SHY, TLT); VONE split 2-for-1; PDBC split 1-for-4; "
+        "1 order(s) could not be filled (GLD)"
+    )
+    assert describe_settlement({}) == ""
 
 
 # ------------------------------------------------------------------ tiger

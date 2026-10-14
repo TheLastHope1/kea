@@ -69,6 +69,10 @@ class Broker(ABC):
         """A copy safe for dry runs: it may simulate, but must not persist or send anything."""
         raise NotImplementedError(f"{type(self).__name__} does not support dry runs")
 
+    def settlement_notes(self) -> dict[str, Any]:
+        """What the last `sync` did besides filling orders (dividends, cancellations)."""
+        return {}
+
     def not_ready_reason(self) -> str | None:
         """Why orders cannot be sent right now (None when they can)."""
         return None
