@@ -372,6 +372,11 @@ def test_tiger_maps_account_orders_and_fills():
     [fill] = broker.sync(history=None)
     assert (fill.symbol, fill.quantity, fill.order_id) == ("SPY", 3.0, "42")
 
+
+def test_tiger_submits_whole_share_market_orders():
+    pytest.importorskip("tigeropen", reason="the optional Tiger SDK builds the orders")
+    client = FakeTradeClient()
+    broker = TigerBroker(trade_client=client, account=PAPER_ACCOUNT)
     tickets = broker.submit(
         [Order("SPY", Side.BUY, 2, 600.0), Order("GLD", Side.BUY, 1.5, 300.0)], date.today()
     )
