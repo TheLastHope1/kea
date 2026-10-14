@@ -104,6 +104,13 @@ def test_dividend_adjustment_turns_price_returns_into_total_returns():
     assert adjusted["close"].iloc[2:].tolist() == [99.0, 99.0]  # after ex-date: unchanged
 
 
+def test_announced_dividend_adjusts_nothing_until_it_goes_ex():
+    raw = bars([100.0, 101.0, 102.0])
+    declared = raw.index[-1] + pd.offsets.BDay(2)  # Nasdaq lists it a few days early
+    adjusted = adjust_for_dividends(raw, pd.Series({declared: 1.0}))
+    pd.testing.assert_frame_equal(adjusted, raw)
+
+
 def test_dividend_parser_keeps_only_cash_distributions():
     rows = [
         {"exOrEffDate": "03/01/2024", "type": "Cash", "amount": "$0.50"},

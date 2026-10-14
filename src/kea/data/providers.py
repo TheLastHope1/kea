@@ -234,10 +234,14 @@ def adjust_for_dividends(bars: pd.DataFrame, dividends: pd.Series) -> pd.DataFra
 
     For each ex-date with cash amount D, every price before the ex-date is scaled by
     1 - D / C, where C is the last close before the ex-date (the CRSP convention).
+    Dividends are announced a few days before they go ex; until a bar exists on or
+    after the ex-date, the dividend has not happened and adjusts nothing.
     """
     close = bars["close"]
     factor = pd.Series(1.0, index=bars.index)
     for ex_date, amount in dividends.items():
+        if close.empty or ex_date > close.index[-1]:
+            continue
         before = close.index < ex_date
         prior_close = close[before].dropna()
         if prior_close.empty:
