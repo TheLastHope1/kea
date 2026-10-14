@@ -6,7 +6,7 @@ from types import SimpleNamespace
 import pandas as pd
 import pytest
 
-from kea.agent import Agent, describe_settlement, resume
+from kea.agent import Agent, benchmark_level, describe_settlement, resume
 from kea.brokers.paper import PaperBroker
 from kea.brokers.tiger import LIVE_ENV_FLAG, LiveTradingBlocked, TigerBroker
 from kea.config import ExecutionConfig, RiskConfig, StrategyConfig
@@ -249,6 +249,32 @@ def test_agent_journals_the_dividends_it_is_paid(agent_setup, history):
     assert (event["symbol"], event["kind"]) == (symbol, "dividend")
     assert ledger.journal()[-1]["distributions"] == [event]
     assert report.message.endswith(f"; received {money(event['amount'])} in dividends ({symbol})")
+
+
+def test_live_benchmark_includes_its_dividends(agent_setup, history):
+    agent, market, ledger = agent_setup
+    agent.run(now=NOW)
+    first = history.dates[market.upto - 1]
+    ex_day = history.dates[market.upto]
+    market.full = rescaled(history, "SPY", ex_day, 0.98)  # SPY pays 2% the next session
+    market.upto += 1
+    agent.run(now=NOW)
+
+    recorded = ledger.equity()["benchmark"]
+    price_return = history.close.at[ex_day, "SPY"] / history.close.at[first, "SPY"]
+    assert recorded.iloc[0] == pytest.approx(history.close.at[first, "SPY"])
+    assert recorded.iloc[1] / recorded.iloc[0] == pytest.approx(price_return / 0.98)
+
+
+def test_benchmark_level_chains_from_the_last_recorded_session(history):
+    track = pd.DataFrame(
+        {"benchmark": [50.0, None]}, index=pd.DatetimeIndex([history.dates[10], history.dates[11]])
+    )
+    level = benchmark_level(track, history.until(history.dates[12]), "SPY")
+    close = history.close["SPY"]
+    assert level == pytest.approx(50.0 * close.iloc[12] / close.iloc[10])
+    assert benchmark_level(track.iloc[:0], history, "SPY") == pytest.approx(close.iloc[-1])
+    assert benchmark_level(track, history, "MISSING") is None
 
 
 def test_settlement_summary_names_splits_and_unfilled_orders():

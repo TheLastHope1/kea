@@ -20,8 +20,11 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
 
+import pandas as pd
+
 from kea.brokers.base import Account, Broker, OrderTicket
 from kea.config import Config
+from kea.data.history import PriceHistory
 from kea.data.store import MarketData
 from kea.fmt import money
 from kea.ledger import AgentState, Ledger
@@ -111,7 +114,7 @@ class Agent:
         exposure = sum(
             w for s, w in account.weights(prices).items() if s != cfg.universe.cash_symbol
         )
-        benchmark = prices.get(cfg.universe.benchmark)
+        benchmark = benchmark_level(self.ledger.equity(), history, cfg.universe.benchmark)
         track = self.ledger.record_equity(
             as_of, account.equity, account.cash, exposure, benchmark, persist=not dry_run
         )
@@ -209,6 +212,28 @@ class Agent:
             return False
         state.seen_fills = [*state.seen_fills, fill.order_id][-500:]
         return True
+
+
+def benchmark_level(track: pd.DataFrame, history: PriceHistory, symbol: str) -> float | None:
+    """The benchmark's total-return level at the latest session, for the track record.
+
+    Vendors rescale past prices for every dividend, so a raw close recorded each day
+    would leave the benchmark's dividends out of the comparison. Instead the level
+    is chained from the last recorded one with today's adjusted closes, whose ratio
+    between any two sessions is the total return. The first level is the price.
+    """
+    if symbol not in history.symbols:
+        return None
+    close = history.close[symbol]
+    today = close.iloc[-1]
+    if not (pd.notna(today) and today > 0):
+        return None
+    earlier = track.loc[track.index < history.dates[-1], "benchmark"].dropna()
+    earlier = earlier[earlier.index.isin(close.dropna().index)]
+    if earlier.empty:
+        return float(today)
+    last = earlier.index[-1]
+    return float(earlier.iloc[-1] * today / close.at[last])
 
 
 def describe_settlement(details: dict[str, Any]) -> str:

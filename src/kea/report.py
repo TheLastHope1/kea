@@ -249,7 +249,7 @@ def paper_section(config: Config, ledger: Ledger) -> str:
     chart = line_chart(
         "paper-chart",
         "Paper account vs the benchmark",
-        "Both indexed to 100 on the first day",
+        "Both indexed to 100 on the first day, dividends included",
         lines,
         fmt="index",
         height=280,
