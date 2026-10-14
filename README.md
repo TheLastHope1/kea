@@ -100,6 +100,10 @@ curve and dashboard to a `paper-ledger` branch. That branch's commit history is 
 timestamped record nobody can quietly edit, which is what makes a track record
 believable. A halt or an error fails the workflow, so GitHub emails you.
 
+The built-in simulator behaves like a real account: orders fill at the next open with
+Tiger's fees, dividends arrive as cash on the ex-date, and splits change the share count.
+The dashboard compares it with buy-and-hold of the benchmark, dividends included.
+
 Scheduled workflows run from the default branch, so this starts once the code is on
 `main`. To paper trade a Tiger account from Actions instead of the built-in simulator,
 add the three `TIGEROPEN_*` values as repository secrets and point the workflow at
