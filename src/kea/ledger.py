@@ -29,6 +29,7 @@ class AgentState:
     retries_left: int = 0
     halted: dict[str, str] | None = None
     seen_fills: list[str] = field(default_factory=list)
+    data_skips: int = 0  # consecutive sessions skipped for suspicious data
 
     @property
     def last_processed_date(self) -> date | None:

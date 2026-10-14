@@ -98,7 +98,9 @@ Details: [Tiger OpenAPI quick start](https://docs-en.itigerup.com/docs/quickstar
 decision cycle after every US close and commits the paper account, journal, equity
 curve and dashboard to a `paper-ledger` branch. That branch's commit history is a
 timestamped record nobody can quietly edit, which is what makes a track record
-believable. A halt or an error fails the workflow, so GitHub emails you.
+believable. A halt, an error, data more than two sessions out of date, or two sessions
+in a row of suspicious data fails the workflow, so GitHub emails you. (`kea run` exits
+with 2 on a halt and 3 when data needs a look.)
 
 The built-in simulator behaves like a real account: orders fill at the next open with
 Tiger's fees, dividends arrive as cash on the ex-date, and splits change the share count.
@@ -115,7 +117,7 @@ add the three `TIGEROPEN_*` values as repository secrets and point the workflow 
 |---|---|
 | Real money by accident | Refuses a non-paper Tiger account unless `broker.allow_live = true` **and** `KEA_ALLOW_LIVE=yes` |
 | A crash in the market | 25% drawdown or 6% one-day loss halts trading until `kea resume` |
-| Bad or stale data | Skips the day if any price is missing, stale, or moved more than 35% |
+| Bad or stale data | Skips the day if any price is missing, stale, or moved more than 35%; asks for a human if it happens twice in a row or the data stops updating |
 | Running twice | Each session is handled once; a lock file stops overlapping runs |
 | Leverage or shorting | Impossible: long-only weights capped at 100% of equity, buys shrink to fit cash |
 | Leaked keys | Credentials only come from the environment; key files are git-ignored |

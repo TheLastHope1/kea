@@ -275,7 +275,9 @@ def cmd_run(config: Config, args: argparse.Namespace) -> int:
     if warning := report.details.get("warning"):
         lines.append(f"WARNING: {warning}")
     print("\n".join(lines))
-    return 2 if report.status == "halted" else 0
+    if report.status == "halted":
+        return 2
+    return 3 if report.alert else 0  # stale or repeatedly bad data: fail a scheduled job
 
 
 def cmd_status(config: Config, args: argparse.Namespace) -> int:

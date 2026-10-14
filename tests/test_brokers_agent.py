@@ -1,15 +1,18 @@
+import argparse
 import dataclasses
 import json
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, time
 from types import SimpleNamespace
 
 import pandas as pd
 import pytest
 
+from kea import cli
 from kea.agent import Agent, benchmark_level, describe_settlement, resume
 from kea.brokers.paper import PaperBroker
 from kea.brokers.tiger import LIVE_ENV_FLAG, LiveTradingBlocked, TigerBroker
 from kea.config import ExecutionConfig, RiskConfig, StrategyConfig
+from kea.data import US_EQUITIES
 from kea.data.history import PriceHistory
 from kea.fmt import money
 from kea.ledger import Ledger
@@ -163,8 +166,15 @@ class FakeMarket:
         self.sources = {s: "fake" for s in history.symbols}
         self.price_only: list[str] = []
 
+    clock = US_EQUITIES
+
     def history(self, symbols, now=None) -> PriceHistory:
         return self.full.head(self.upto).select(symbols)
+
+    def now(self, sessions_later: int = 0) -> datetime:
+        """Evening (New York) of the latest session served, or of a later weekday."""
+        day = self.full.dates[self.upto - 1] + pd.offsets.BDay(sessions_later)
+        return datetime.combine(day.date(), time(22), UTC)
 
 
 @pytest.fixture
@@ -180,19 +190,16 @@ def agent_setup(config, history):
     return agent, market, ledger
 
 
-NOW = datetime(2030, 1, 1, tzinfo=UTC)
-
-
 def test_agent_trades_then_is_idempotent_then_settles(agent_setup):
     agent, market, ledger = agent_setup
-    first = agent.run(now=NOW)
+    first = agent.run(now=market.now())
     assert first.status == "traded"
     assert first.tickets and all(t.status == "queued" for t in first.tickets)
 
-    assert agent.run(now=NOW).status == "skipped"  # same session: harmless rerun
+    assert agent.run(now=market.now()).status == "skipped"  # same session: harmless rerun
 
     market.upto += 1
-    nxt = agent.run(now=NOW)
+    nxt = agent.run(now=market.now())
     assert nxt.status == "held"
     assert len(nxt.fills) == len(first.tickets)
     assert agent.broker.state["positions"]
@@ -201,8 +208,8 @@ def test_agent_trades_then_is_idempotent_then_settles(agent_setup):
 
 
 def test_dry_run_changes_nothing(agent_setup):
-    agent, _, ledger = agent_setup
-    report = agent.run(dry_run=True, now=NOW)
+    agent, market, ledger = agent_setup
+    report = agent.run(dry_run=True, now=market.now())
     assert report.status == "dry-run"
     assert report.tickets
     assert not ledger.state_path.exists()
@@ -214,13 +221,13 @@ def test_dry_run_changes_nothing(agent_setup):
 def test_agent_halts_on_drawdown_until_resumed(agent_setup):
     agent, market, ledger = agent_setup
     agent.config = dataclasses.replace(agent.config, risk=RiskConfig(halt_drawdown=0.01))
-    agent.run(now=NOW)
+    agent.run(now=market.now())
     ledger.record_equity(date(2000, 1, 1), 1_000_000.0, 0.0, 0.0, None)  # an old, higher peak
     market.upto += 1
-    halted = agent.run(now=NOW)
+    halted = agent.run(now=market.now())
     assert halted.status == "halted"
     market.upto += 1
-    assert agent.run(now=NOW).status == "halted"  # stays halted on later sessions
+    assert agent.run(now=market.now()).status == "halted"  # stays halted on later sessions
     assert "Resumed" in resume(ledger)
     assert ledger.load_state().halted is None
 
@@ -230,21 +237,52 @@ def test_agent_skips_trading_on_suspicious_data(agent_setup, history):
     close = history.close.copy()
     close.iloc[399, close.columns.get_loc("UP")] *= 3
     market.full = PriceHistory(history.open, history.high, history.low, close, history.volume)
-    report = agent.run(now=NOW)
+    report = agent.run(now=market.now())
     assert report.status == "skipped"
     assert "UP" in report.message
 
 
+def test_agent_asks_for_help_when_bad_data_persists(agent_setup, history):
+    agent, market, ledger = agent_setup
+    close = history.close.copy()
+    close.iloc[399, close.columns.get_loc("UP")] *= 3  # a bad print, then the fall back from it
+    market.full = PriceHistory(history.open, history.high, history.low, close, history.volume)
+    first = agent.run(now=market.now())
+    assert (first.status, first.alert) == ("skipped", False)
+    market.upto += 1
+    second = agent.run(now=market.now())
+    assert (second.status, second.alert) == ("skipped", True)
+    assert second.message.endswith("(2 sessions in a row)")
+    market.upto += 1
+    assert agent.run(now=market.now()).status == "traded"
+    assert ledger.load_state().data_skips == 0
+
+
+def test_agent_raises_the_alarm_when_data_stops_updating(agent_setup, monkeypatch):
+    agent, market, ledger = agent_setup
+    assert agent.run(now=market.now()).status == "traded"
+    # A holiday plus a late vendor is normal; the cached history repeating for a week is not.
+    assert agent.run(now=market.now(sessions_later=2)).status == "skipped"
+    stale = agent.run(now=market.now(sessions_later=3))
+    assert (stale.status, stale.alert) == ("stale", True)
+    assert "3 sessions before" in stale.message
+    assert ledger.journal()[-1]["alert"] is True
+
+    monkeypatch.setattr(cli, "build_agent", lambda config: agent)
+    monkeypatch.setattr(agent, "run", lambda dry_run=False: stale)
+    assert cli.cmd_run(agent.config, argparse.Namespace(dry_run=False)) == 3
+
+
 def test_agent_journals_the_dividends_it_is_paid(agent_setup, history):
     agent, market, ledger = agent_setup
-    agent.run(now=NOW)
+    agent.run(now=market.now())
     market.upto += 1
-    agent.run(now=NOW)  # orders fill, holdings are marked at this close
+    agent.run(now=market.now())  # orders fill, holdings are marked at this close
     symbol = sorted(agent.broker.state["positions"])[0]
     market.full = rescaled(history, symbol, history.dates[market.upto], 0.99)
     market.upto += 1
 
-    report = agent.run(now=NOW)
+    report = agent.run(now=market.now())
     [event] = report.details["distributions"]
     assert (event["symbol"], event["kind"]) == (symbol, "dividend")
     assert ledger.journal()[-1]["distributions"] == [event]
@@ -253,12 +291,12 @@ def test_agent_journals_the_dividends_it_is_paid(agent_setup, history):
 
 def test_live_benchmark_includes_its_dividends(agent_setup, history):
     agent, market, ledger = agent_setup
-    agent.run(now=NOW)
+    agent.run(now=market.now())
     first = history.dates[market.upto - 1]
     ex_day = history.dates[market.upto]
     market.full = rescaled(history, "SPY", ex_day, 0.98)  # SPY pays 2% the next session
     market.upto += 1
-    agent.run(now=NOW)
+    agent.run(now=market.now())
 
     recorded = ledger.equity()["benchmark"]
     price_return = history.close.at[ex_day, "SPY"] / history.close.at[first, "SPY"]

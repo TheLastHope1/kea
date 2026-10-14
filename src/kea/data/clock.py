@@ -32,6 +32,15 @@ class SessionClock:
                 day -= timedelta(days=1)
         return day
 
+    def sessions_between(self, earlier: date, later: date) -> int:
+        """Sessions after `earlier` up to and including `later` (holidays count as sessions)."""
+        days = (later - earlier).days
+        if days <= 0:
+            return 0
+        if not self.weekdays_only:
+            return days
+        return sum((earlier + timedelta(days=n)).weekday() < 5 for n in range(1, days + 1))
+
     def drop_incomplete(self, frame: pd.DataFrame, now: datetime) -> pd.DataFrame:
         """Remove any still-forming bar (e.g. today's, while the market is open)."""
         cutoff = pd.Timestamp(self.last_complete_session(now))

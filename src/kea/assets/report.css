@@ -189,7 +189,7 @@ tr.benchmark td { color: var(--ink-2); }
 .pill { display: inline-block; padding: 1px 8px; border-radius: 999px; font: 600 11.5px/1.6 var(--font-ui); letter-spacing: 0.02em; background: var(--grid); color: var(--ink-2); }
 .pill-traded { background: var(--accent-wash); color: var(--accent); }
 .pill-halted { background: var(--bad); color: var(--surface); }
-.pill-skipped, .pill-waiting { background: var(--warn-bg); color: var(--warn-ink); }
+.pill-skipped, .pill-waiting, .pill-stale { background: var(--warn-bg); color: var(--warn-ink); }
 
 /* Method notes */
 .notes { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 12px 28px; }

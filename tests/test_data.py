@@ -1,4 +1,4 @@
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from zoneinfo import ZoneInfo
 
 import numpy as np
@@ -184,6 +184,14 @@ def test_equity_session_is_final_half_an_hour_after_the_close():
 def test_weekends_roll_back_to_friday():
     sunday = datetime(2026, 10, 4, 12, tzinfo=NY)
     assert str(US_EQUITIES.last_complete_session(sunday)) == "2026-10-02"
+
+
+def test_sessions_between_counts_weekdays_for_stocks_and_days_for_crypto():
+    friday, monday = date(2026, 10, 9), date(2026, 10, 12)
+    assert US_EQUITIES.sessions_between(friday, monday) == 1
+    assert US_EQUITIES.sessions_between(friday, date(2026, 10, 16)) == 5
+    assert US_EQUITIES.sessions_between(monday, friday) == 0
+    assert CRYPTO.sessions_between(friday, monday) == 3
 
 
 def test_crypto_bar_is_final_after_utc_midnight():

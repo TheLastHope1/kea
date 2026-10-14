@@ -36,11 +36,16 @@ from kea.strategies import Strategy
 log = logging.getLogger(__name__)
 
 MAX_RETRIES = 3
+# A holiday plus a vendor publishing a day late leaves the data two sessions behind
+# the clock. Further behind means the sources are down and Kea is running blind.
+MAX_DATA_LAG = 2
+# One session of suspicious data is skipped quietly; this many in a row needs a human.
+DATA_SKIPS_BEFORE_ALERT = 2
 
 
 @dataclass
 class RunReport:
-    status: str  # traded | held | skipped | waiting | halted | dry-run
+    status: str  # traded | held | skipped | waiting | stale | halted | dry-run
     message: str
     as_of: str | None = None
     account: Account | None = None
@@ -48,6 +53,7 @@ class RunReport:
     tickets: list[OrderTicket] = field(default_factory=list)
     fills: list[Fill] = field(default_factory=list)
     details: dict[str, Any] = field(default_factory=dict)
+    alert: bool = False  # a human should look, though nothing is halted
 
     def to_event(self) -> dict[str, Any]:
         return {
@@ -58,6 +64,7 @@ class RunReport:
             "targets": {k: round(v, 4) for k, v in self.targets.items() if v},
             "orders": [t.to_dict() for t in self.tickets],
             "fills": [f.to_dict() for f in self.fills],
+            **({"alert": True} if self.alert else {}),
             **self.details,
         }
 
@@ -130,12 +137,32 @@ class Agent:
                 state.halted = {"reason": reason, "since": as_of.isoformat()}
             return report("halted", f"circuit breaker: {reason}")
 
+        # Checked before "already handled": a source that is down leaves the cached
+        # history frozen, which would otherwise look like the same session every day.
+        expected = self.market_data.clock.last_complete_session(now)
+        lag = self.market_data.clock.sessions_between(as_of, expected)
+        if lag > MAX_DATA_LAG:
+            stale = report(
+                "stale",
+                f"the latest data is for {as_of}, {lag} sessions before {expected}; "
+                "check the data sources",
+            )
+            stale.alert = True
+            return stale
+
         if state.last_processed_date and as_of <= state.last_processed_date:
             return report("skipped", f"session {as_of} was already handled")
 
         problems = data_problems(history, cfg.universe.tradable, cfg.risk)
+        skips = state.data_skips + 1 if problems else 0
+        if not dry_run:
+            state.data_skips = skips
         if problems:
-            return report("skipped", "data problems: " + "; ".join(problems))
+            skipped = report("skipped", "data problems: " + "; ".join(problems))
+            skipped.alert = skips >= DATA_SKIPS_BEFORE_ALERT
+            if skipped.alert:
+                skipped.message += f" ({skips} sessions in a row)"
+            return skipped
 
         if price_only := self.market_data.price_only:
             details["warning"] = f"price-only data (dividends ignored) for {', '.join(price_only)}"
